@@ -1,0 +1,35 @@
+name: Daily CWV & GSC monitor
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 16:00 VN, after GSC D-2 data is available
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # to commit data.db back
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run monitor
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          PSI_API_KEY: ${{ secrets.PSI_API_KEY }}
+          CHAT_WEBHOOK: ${{ secrets.CHAT_WEBHOOK }}
+        run: |
+          echo '${{ secrets.GSC_SA_JSON }}' > sa.json
+          python monitor.py
+          rm sa.json
+      - name: Commit history DB
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add data.db
+          git diff --cached --quiet || git commit -m "data: $(date -I)"
+          git push
