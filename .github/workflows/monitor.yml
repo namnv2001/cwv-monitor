@@ -2,7 +2,8 @@ name: Daily CWV monitor
 
 on:
   schedule:
-    - cron: "0 9 * * *" # 16:00 VN
+    - cron: "0 9 * * *" # 16:00 VN daily — field-data run, saves to data.db
+    - cron: "0 2 * * 1" # 09:00 VN Monday — manual-trigger flow, lab data, no db write
   workflow_dispatch: {}
 
 permissions:
@@ -11,6 +12,9 @@ permissions:
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    env:
+      # ad-hoc workflow_dispatch or the weekly Monday cron => manual/lab-data flow, never touch data.db
+      MANUAL_TRIGGER: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * 1' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,8 +25,6 @@ jobs:
           SITE_URLS: ${{ secrets.SITE_URLS }}
           PSI_API_KEY: ${{ secrets.PSI_API_KEY }}
           CHAT_WEBHOOK: ${{ secrets.CHAT_WEBHOOK }}
-          # workflow_dispatch = ad-hoc manual run: report to Chat, never touch data.db
-          MANUAL_TRIGGER: ${{ github.event_name == 'workflow_dispatch' }}
           # optional tuning — `|| default` because an unset repo variable renders as "" here,
           # which would otherwise reach monitor.py as CWV_LCP_MS="" and fail int("")
           CWV_LCP_MS: ${{ vars.CWV_LCP_MS || '2500' }}
@@ -30,7 +32,7 @@ jobs:
           CWV_CLS: ${{ vars.CWV_CLS || '0.1' }}
         run: python monitor.py
       - name: Commit history DB
-        if: github.event_name != 'workflow_dispatch'
+        if: env.MANUAL_TRIGGER != 'true'
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
