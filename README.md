@@ -1,35 +1,52 @@
-# cwv-gsc-monitor
+# cwv-monitor
 
-Monitor Core Web Vitals + Google Search Console hàng ngày, alert vào Google Chat khi bất thường. Một script Python, lưu lịch sử bằng SQLite. Chi tiết thiết kế: xem [PLAN.md](PLAN.md).
+Monitor Core Web Vitals hàng ngày cho nhiều URL, alert vào Google Chat khi bất thường. Một script Python, lưu lịch sử bằng SQLite. Chi tiết thiết kế: xem [PLAN.md](PLAN.md).
 
 ## Setup
 
-1. Google Cloud: bật **PageSpeed Insights API** + **Search Console API**, tạo API key (PSI) và service account key JSON (GSC).
-2. Search Console → Settings → Users: thêm email service account, quyền Restricted.
-3. Google Chat space → Apps & integrations → Webhooks: tạo webhook, copy URL.
+1. Google Cloud: bật **PageSpeed Insights API**, tạo API key.
+2. Google Chat space → Apps & integrations → Webhooks: tạo webhook, copy URL.
 
 ## Chạy local
 
 ```bash
-pip install -r requirements.txt
-export SITE_URL=https://example.com/   # đúng property trong GSC (hoặc sc-domain:example.com)
+export SITE_URLS=https://example.com/,https://example.com/pricing   # nhiều URL, phân tách bằng dấu phẩy
 export PSI_API_KEY=...
 export CHAT_WEBHOOK=https://chat.googleapis.com/v1/spaces/...
-export GSC_SA_FILE=sa.json             # default
 python3 monitor.py
 ```
 
-Test logic (không cần credentials): `python3 test_monitor.py`
+Hoặc gom vào file `.env` (đã có trong `.gitignore`) rồi `source` trước khi chạy — không cần cài `python-dotenv`:
+
+```bash
+# .env
+SITE_URLS=https://example.com/,https://example.com/pricing
+PSI_API_KEY=...
+CHAT_WEBHOOK=https://chat.googleapis.com/v1/spaces/...
+```
+
+```bash
+set -a; source .env; set +a
+python3 monitor.py
+```
+
+Mỗi URL lấy CrUX field data (p75, số liệu tổng hợp 28 ngày từ người dùng thật) qua PSI API — 1 lần gọi mỗi URL, không cần retry nhiều lần vì field data không đổi trong ngày. Một URL lỗi API/timeout hoặc không có trong CrUX (traffic thấp) sẽ báo cảnh báo riêng, các URL khác vẫn tiếp tục chạy.
+
+Không có dependency ngoài stdlib. Test logic: `python3 test_monitor.py`
+
+## Trigger thủ công
+
+Set `MANUAL_TRIGGER=true` (hoặc chạy workflow bằng nút **Run workflow** trên GitHub Actions — đã tự set biến này). Luồng này khác luồng chạy theo lịch:
+- **Luôn báo đủ 3 chỉ số** (LCP, INP, CLS) của từng URL về Chat, không chỉ khi có bất thường — thiếu chỉ số nào (không có trong CrUX, hoặc API lỗi/timeout) sẽ hiện `N/A`, không bị bỏ qua.
+- **Không lưu vào `data.db`** — dùng để test nhanh, không ảnh hưởng lịch sử/so sánh median.
 
 ## Chạy tự động (GitHub Actions)
 
-Push repo lên GitHub, thêm 4 secrets: `SITE_URL`, `PSI_API_KEY`, `CHAT_WEBHOOK`, `GSC_SA_JSON` (nội dung file sa.json). Workflow chạy 16h VN hàng ngày, commit `data.db` lại vào repo làm lịch sử.
+Push repo lên GitHub, thêm 3 secrets: `SITE_URLS`, `PSI_API_KEY`, `CHAT_WEBHOOK`. Workflow chạy 16h VN hàng ngày (lưu `data.db`), hoặc chạy thủ công qua **Run workflow** (báo Chat, không lưu — xem mục trên).
 
 ## Luật cảnh báo
 
 - 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75, mobile)
-- 🟠 CWV xấu đi >20% so với median 28 ngày
-- 🟠 Clicks/impressions giảm >30% so với median cùng thứ-trong-tuần
-- 🟠 Position tệ đi >20% so với median
+- 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL)
 
 Chỉnh ngưỡng ở phần CONFIG đầu `monitor.py`. Cần ≥7 ngày dữ liệu mới bật so sánh tương đối.
