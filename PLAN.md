@@ -9,7 +9,8 @@ Script Python chạy hàng ngày: với mỗi URL trong danh sách, lấy Core W
         │                                          │
         └──────────────────┬───────────────────────┘
                         monitor.py  (lặp qua từng URL trong SITE_URLS)
-                            ├── fetch_cwv(url) → PSI API, đọc loadingExperience field data, {} nếu fail/timeout/không có CrUX
+                            ├── fetch_cwv(url) → PSI API, đọc loadingExperience field data, {} nếu fail/timeout/không có CrUX (cron)
+                            ├── fetch_lab_cwv(url) → PSI API, đọc lighthouseResult lab data, {} nếu fail/timeout (manual)
                             ├── SQLite (data.db) ─► lưu lịch sử daily, PK (day, url) — bỏ qua khi MANUAL_TRIGGER
                             ├── check_anomalies() ► so với ngưỡng tuyệt đối + median lịch sử theo url
                             └── Google Chat webhook ◄ alert khi bất thường (cron) hoặc luôn báo (manual)
@@ -29,7 +30,8 @@ Một file, các hàm:
 
 | Hàm | Việc | Nguồn |
 |---|---|---|
-| `fetch_cwv(url)` | GET PSI API, đọc `loadingExperience.metrics` (field data CrUX, percentile p75). Trả `{}` nếu lỗi/timeout hoặc URL không có trong CrUX | urllib, không cần lib |
+| `fetch_cwv(url)` | GET PSI API, đọc `loadingExperience.metrics` (field data CrUX, percentile p75). Trả `{}` nếu lỗi/timeout hoặc URL không có trong CrUX. Dùng cho luồng chạy theo lịch | urllib, không cần lib |
+| `fetch_lab_cwv(url)` | GET PSI API, đọc `lighthouseResult.audits`/`categories.performance` (lab data, 1 lần chạy Lighthouse mô phỏng): Performance score, FCP, LCP, TBT, CLS, TTFB, NRTT (`displayValue` gốc từ Lighthouse). TBT thay INP (không mô phỏng tương tác thật). Dùng cho luồng trigger thủ công | urllib, không cần lib |
 | `save(day, url, metrics)` | INSERT OR REPLACE vào bảng `daily` | sqlite3 (stdlib) |
 | `history(day, url, n)` | Lấy n ngày gần nhất của `url` từ DB | sqlite3 |
 | `check_anomalies(today, hist)` | Trả về list message vi phạm | thuần Python |
@@ -54,9 +56,11 @@ CREATE TABLE IF NOT EXISTS daily (
 Hai lớp, đều là threshold đơn giản, tính riêng theo từng URL:
 
 **Tuyệt đối (CWV vượt ngưỡng "Good" của Google):**
-- LCP p75 > 2500ms
-- INP p75 > 200ms
-- CLS p75 > 0.1
+- LCP p75 > 2500ms (`CWV_LCP_MS`)
+- INP p75 > 200ms (`CWV_INP_MS`)
+- CLS p75 > 0.1 (`CWV_CLS`)
+
+Ba ngưỡng trên đọc từ env var (mặc định = Google "Good"), tune trực tiếp qua secret/`.env` mà không cần sửa code.
 
 **Tương đối (so với lịch sử của cùng URL):**
 - CWV xấu đi > 20% so với median 28 ngày
@@ -75,8 +79,10 @@ Cần ≥ 7 ngày dữ liệu mới bật so sánh tương đối; trước đó
 ### Phase 4b — Trigger thủ công
 
 Dùng sẵn `workflow_dispatch` (nút **Run workflow**) làm cơ chế trigger thủ công — không cần thêm CLI flag/parser. Workflow set `MANUAL_TRIGGER=true` khi `github.event_name == 'workflow_dispatch'`; `monitor.py` đọc biến này và:
+- Gọi `fetch_lab_cwv()` (lab data, Lighthouse) thay vì `fetch_cwv()` (field data, CrUX) — không cần đợi đủ traffic thật, phản ánh đúng trạng thái trang ngay lúc trigger.
 - Bỏ qua `save()`/`history()` — không đụng `data.db`.
-- Luôn gửi kết quả (LCP, INP, CLS) của mọi URL về Chat, không chỉ khi có bất thường.
+- Luôn gửi breakdown đầy đủ (Performance score, FCP, LCP, TBT, CLS, TTFB, NRTT) của mọi URL về Chat, không chỉ khi có bất thường.
+- Mọi message (report lẫn cảnh báo 🔴/🟠) đều gắn nhãn `[lab data]` hoặc `[field data (CrUX)]` để phân biệt nguồn số liệu.
 
 Chạy local tương đương: `MANUAL_TRIGGER=true python3 monitor.py`.
 
@@ -91,7 +97,7 @@ Chạy local tương đương: `MANUAL_TRIGGER=true python3 monitor.py`.
 - Dashboard / UI — xem lịch sử bằng `sqlite3 data.db` hoặc export CSV khi cần.
 - RUM script trên site — CrUX field data qua PSI là đủ.
 - ML anomaly detection — threshold + median đủ; nâng cấp z-score nếu false alert nhiều.
-- Retry nhiều lần / lab data (Lighthouse) — field data không đổi trong ngày nên retry không giúp gì; nếu sau này cần theo dõi URL traffic thấp (không có CrUX), mới cần cân nhắc lab data.
+- Retry nhiều lần khi gọi PSI API — field/lab data không đổi trong 1 lần gọi nên retry không giúp gì.
 - CLI argparse cho manual trigger — `workflow_dispatch` + 1 env var là đủ.
 
 ## Ước lượng

@@ -37,8 +37,16 @@ Không có dependency ngoài stdlib. Test logic: `python3 test_monitor.py`
 ## Trigger thủ công
 
 Set `MANUAL_TRIGGER=true` (hoặc chạy workflow bằng nút **Run workflow** trên GitHub Actions — đã tự set biến này). Luồng này khác luồng chạy theo lịch:
-- **Luôn báo đủ 3 chỉ số** (LCP, INP, CLS) của từng URL về Chat, không chỉ khi có bất thường — thiếu chỉ số nào (không có trong CrUX, hoặc API lỗi/timeout) sẽ hiện `N/A`, không bị bỏ qua.
+- **Lấy số liệu từ lab data (Lighthouse)** thay vì field data (CrUX) — một lần chạy Lighthouse mô phỏng ngay lúc trigger, phản ánh đúng trạng thái trang hiện tại, không cần đợi đủ traffic thật như CrUX.
+- **Luôn báo đủ breakdown về Chat** cho từng URL, không chỉ khi có bất thường:
+  ```
+  *https://example.com/* [lab data]
+  Performance: 35/100
+  FCP: 2.8 s | LCP: 35.1 s | TBT: 1,560 ms | CLS: 0.016 | TTFB: Root document took 1,230 ms | NRTT: 280 ms
+  ```
+  TBT (Total Blocking Time) thay cho INP làm proxy tương tác — lab không mô phỏng tương tác người dùng thật nên không có INP. Thiếu chỉ số nào hiện `N/A`.
 - **Không lưu vào `data.db`** — dùng để test nhanh, không ảnh hưởng lịch sử/so sánh median.
+- Mỗi dòng report/alert đều gắn nhãn `[lab data]` hoặc `[field data (CrUX)]` để phân biệt rõ nguồn số liệu.
 
 ## Chạy tự động (GitHub Actions)
 
@@ -49,4 +57,12 @@ Push repo lên GitHub, thêm 3 secrets: `SITE_URLS`, `PSI_API_KEY`, `CHAT_WEBHOO
 - 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75, mobile)
 - 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL)
 
-Chỉnh ngưỡng ở phần CONFIG đầu `monitor.py`. Cần ≥7 ngày dữ liệu mới bật so sánh tương đối.
+Ngưỡng tuyệt đối (🔴) tune được qua env var, không cần sửa code:
+
+| Env var | Mặc định | Ý nghĩa |
+|---|---|---|
+| `CWV_LCP_MS` | `2500` | Ngưỡng LCP (ms) |
+| `CWV_INP_MS` | `200` | Ngưỡng INP (ms) |
+| `CWV_CLS` | `0.1` | Ngưỡng CLS |
+
+`CWV_REL_WORSE` (%so median 28 ngày) và `MIN_HISTORY` (số ngày dữ liệu tối thiểu) vẫn ở phần CONFIG đầu `monitor.py`. Cần ≥7 ngày dữ liệu mới bật so sánh tương đối.
