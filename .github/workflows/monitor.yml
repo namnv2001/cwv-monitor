@@ -23,6 +23,11 @@ jobs:
           CHAT_WEBHOOK: ${{ secrets.CHAT_WEBHOOK }}
           # workflow_dispatch = ad-hoc manual run: report to Chat, never touch data.db
           MANUAL_TRIGGER: ${{ github.event_name == 'workflow_dispatch' }}
+          # optional tuning — `|| default` because an unset repo variable renders as "" here,
+          # which would otherwise reach monitor.py as CWV_LCP_MS="" and fail int("")
+          CWV_LCP_MS: ${{ vars.CWV_LCP_MS || '2500' }}
+          CWV_INP_MS: ${{ vars.CWV_INP_MS || '200' }}
+          CWV_CLS: ${{ vars.CWV_CLS || '0.1' }}
         run: python monitor.py
       - name: Commit history DB
         if: github.event_name != 'workflow_dispatch'

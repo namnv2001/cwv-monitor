@@ -50,7 +50,9 @@ Set `MANUAL_TRIGGER=true` (hoặc chạy workflow bằng nút **Run workflow** t
 
 ## Chạy tự động (GitHub Actions)
 
-Push repo lên GitHub, thêm 3 secrets: `SITE_URLS`, `PSI_API_KEY`, `CHAT_WEBHOOK`. Workflow chạy 16h VN hàng ngày (lưu `data.db`), hoặc chạy thủ công qua **Run workflow** (báo Chat, không lưu — xem mục trên).
+Push repo lên GitHub, thêm 3 secrets (Settings → Secrets and variables → Actions → tab **Secrets**): `SITE_URLS`, `PSI_API_KEY`, `CHAT_WEBHOOK`. Workflow chạy 16h VN hàng ngày (lưu `data.db`), hoặc chạy thủ công qua **Run workflow** (báo Chat, không lưu — xem mục trên).
+
+Muốn tune ngưỡng CWV mà không đổi code: thêm **Repository variables** (cùng chỗ, đổi qua tab **Variables**) `CWV_LCP_MS`, `CWV_INP_MS`, `CWV_CLS` — không cần thiết lập cả 3, thiếu cái nào workflow tự dùng mặc định của cái đó.
 
 ## Luật cảnh báo
 
