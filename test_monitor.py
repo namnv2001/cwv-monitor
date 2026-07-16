@@ -1,6 +1,8 @@
 """Smoke test for fetch defense + anomaly logic + storage. Run: python3 test_monitor.py"""
 import os
 import sqlite3
+import subprocess
+import sys
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +21,15 @@ def make_db(days=28, url="https://example.com/"):
         d = (date(2026, 7, 7) - timedelta(days=i)).isoformat()
         monitor.save(db, d, url, {"lcp_ms": 2000, "inp_ms": 150, "cls": 0.05})
     return db
+
+
+def test_empty_secret_fails_fast_with_clear_message():
+    # Simulates an unset GitHub Actions secret, which renders as "" rather than being absent.
+    env = {**os.environ, "SITE_URLS": "https://example.com/", "PSI_API_KEY": "x", "CHAT_WEBHOOK": ""}
+    result = subprocess.run([sys.executable, "-c", "import monitor"],
+                             cwd=os.path.dirname(os.path.abspath(__file__)), env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "CHAT_WEBHOOK" in result.stderr
 
 
 def test_history_and_anomalies():
@@ -151,6 +162,7 @@ def test_data_source_label_follows_manual_trigger():
 
 
 if __name__ == "__main__":
+    test_empty_secret_fails_fast_with_clear_message()
     test_history_and_anomalies()
     test_check_anomalies_formats_lcp_inp_with_thousands_separator_and_cls_3_decimals()
     test_fetch_cwv_parses_field_data()

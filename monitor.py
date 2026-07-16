@@ -23,6 +23,11 @@ CHAT_WEBHOOK = os.environ["CHAT_WEBHOOK"]
 DB_FILE = os.environ.get("DB_FILE", "data.db")
 MANUAL_TRIGGER = os.environ.get("MANUAL_TRIGGER", "false").lower() == "true"
 
+# An unset GitHub Actions secret renders as "" rather than raising — check explicitly so a
+# missing repo secret fails fast here instead of a cryptic urllib error deep in alert().
+if not SITE_URLS or not PSI_API_KEY or not CHAT_WEBHOOK:
+    sys.exit("Missing SITE_URLS / PSI_API_KEY / CHAT_WEBHOOK — check GitHub repo Secrets (or .env locally)")
+
 PSI_TIMEOUT = 120         # seconds per API call — a full Lighthouse audit can take 60-90s+ on heavy pages
 
 # Thresholds — Google "Good" limits (p75) by default, override via env vars to tune without a code change
