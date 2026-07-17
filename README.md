@@ -67,6 +67,8 @@ Tin tốt (chỉ áp dụng cho luồng auto, cần lịch sử field data):
 - ✅ Chỉ số vừa quay lại ngưỡng Good, ngày trước đó còn vượt ngưỡng.
 - 🟢 Chỉ số tốt hơn median 28 ngày >20% (đối xứng với ngưỡng 🟠 xấu đi, tune qua hằng số `CWV_REL_BETTER` đầu `monitor.py`, không có env var riêng).
 
+Cuối tuần (thứ 7, chủ nhật), luồng auto skip alert nếu chỉ có cảnh báo/lỗi fetch — không ai trực Chat để xử lý ngay. Nếu có ít nhất 1 tin tốt (✅/🟢) thì vẫn báo bình thường như ngày thường.
+
 Header của message Chat tự đổi theo nội dung: 💀 `[CWV Auto Alert]` nếu có ít nhất 1 cảnh báo/lỗi fetch, 🎉 `[CWV Auto Update]` nếu toàn tin tốt.
 
 Ngưỡng tuyệt đối (🔴) tune được qua env var, không cần sửa code:

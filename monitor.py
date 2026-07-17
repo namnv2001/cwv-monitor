@@ -144,6 +144,10 @@ def _data_source_label():
     return "lab data" if MANUAL_TRIGGER else "field data (CrUX)"
 
 
+def _is_weekend(day):
+    return date.fromisoformat(day).weekday() >= 5  # Saturday=5, Sunday=6
+
+
 def _fmt_metric(key, v):
     return f"{v:.3f}" if key == "cls" else f"{v:,.0f}"  # CLS: 3 decimals; ms metrics: comma thousands
 
@@ -266,6 +270,14 @@ def main():
 
     if db:
         db.close()
+
+    # Weekend: nobody's watching Chat to act on a warning, so skip the auto alert — unless
+    # there's an improvement to report, which is worth surfacing regardless of day.
+    if not MANUAL_TRIGGER and chat_lines and _is_weekend(day):
+        has_improvement = any(m in line for line in chat_lines for m in ("✅", "🟢"))
+        if not has_improvement:
+            print(f"{day}: weekend, no improvement to report — skipping auto alert")
+            chat_lines = []
 
     # Manual trigger always reports (that's the point of a manual check). Auto/scheduled runs
     # only alert Chat when there's something notable — a warning/failure or an improvement —
