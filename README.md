@@ -32,12 +32,7 @@ python3 monitor.py
 
 Mỗi URL lấy CrUX field data (p75, số liệu tổng hợp 28 ngày từ người dùng thật) qua PSI API — 1 lần gọi mỗi URL, không cần retry nhiều lần vì field data không đổi trong ngày. Một URL lỗi API/timeout hoặc không có trong CrUX (traffic thấp) sẽ báo cảnh báo riêng, các URL khác vẫn tiếp tục chạy.
 
-Không có dependency ngoài stdlib. Test logic: `python3 test_monitor.py`
-
-Bật pre-commit hook chặn commit khi test fail (chạy 1 lần sau khi clone):
-```bash
-git config core.hooksPath .githooks
-```
+Không có dependency ngoài stdlib. Test logic: `python3 test_monitor.py` — CI chạy test này tự động trên mỗi push/PR (xem `.github/workflows/test.yml`), không cần setup gì thêm.
 
 ## Trigger thủ công
 

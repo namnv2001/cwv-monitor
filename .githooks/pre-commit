@@ -1,9 +1,0 @@
-#!/bin/sh
-# Blocks the commit if test_monitor.py fails. Enable once per clone with:
-#   git config core.hooksPath .githooks
-echo "Running test_monitor.py..."
-python test_monitor.py
-if [ $? -ne 0 ]; then
-    echo "pre-commit: tests failed — commit aborted (git commit --no-verify to skip)"
-    exit 1
-fi
