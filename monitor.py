@@ -220,7 +220,6 @@ def main():
         db.execute(SCHEMA)
 
     failures, chat_lines = 0, []
-    chat_lines.append(f"*[CWV Report]*\n") if MANUAL_TRIGGER else chat_lines.append(f"*[CWV Auto Alert]*\n")
     for url in SITE_URLS:
         metrics, msgs = check_url(url, day, db)
         if metrics is None:
@@ -239,8 +238,12 @@ def main():
     if db:
         db.close()
 
-    if chat_lines:
-        alert("\n\n".join(chat_lines))
+    # Manual trigger always reports (that's the point of a manual check). Auto/scheduled runs
+    # only alert Chat when there's an actual warning/failure — silence on all-clear days.
+    if MANUAL_TRIGGER and chat_lines:
+        alert("📌 *[CWV Report]*\n" + "\n\n".join(chat_lines))
+    elif not MANUAL_TRIGGER and chat_lines:
+        alert("💀 *[CWV Auto Alert]*\n" + "\n\n".join(chat_lines))
 
     if failures == len(SITE_URLS):
         sys.exit(1)
