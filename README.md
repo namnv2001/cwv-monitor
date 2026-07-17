@@ -34,6 +34,11 @@ Mỗi URL lấy CrUX field data (p75, số liệu tổng hợp 28 ngày từ ng�
 
 Không có dependency ngoài stdlib. Test logic: `python3 test_monitor.py`
 
+Bật pre-commit hook chặn commit khi test fail (chạy 1 lần sau khi clone):
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Trigger thủ công
 
 Set `MANUAL_TRIGGER=true` (hoặc chạy workflow bằng nút **Run workflow** trên GitHub Actions — đã tự set biến này). Luồng này khác luồng chạy theo lịch:
