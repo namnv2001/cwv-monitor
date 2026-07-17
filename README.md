@@ -1,6 +1,6 @@
 # cwv-monitor
 
-Monitor Core Web Vitals hàng ngày cho nhiều URL, alert vào Google Chat khi bất thường. Một script Python, lưu lịch sử bằng SQLite. Chi tiết thiết kế: xem [PLAN.md](PLAN.md).
+Monitor Core Web Vitals hàng ngày cho nhiều URL, alert vào Google Chat khi bất thường. Một script Python, lưu lịch sử bằng SQLite.
 
 ## Setup
 
@@ -60,6 +60,8 @@ Muốn tune ngưỡng CWV mà không đổi code: thêm **Repository variables**
 
 - 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75, mobile)
 - 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL)
+
+Luồng auto (chạy theo lịch) chỉ gửi Chat khi có ít nhất 1 cảnh báo (🔴/🟠) hoặc 1 URL lỗi fetch — không có gì bất thường thì im lặng, không alert. Luồng manual trigger luôn báo cáo đầy đủ về Chat, kể cả khi không có cảnh báo (đó là mục đích của việc trigger thủ công).
 
 Ngưỡng tuyệt đối (🔴) tune được qua env var, không cần sửa code:
 
