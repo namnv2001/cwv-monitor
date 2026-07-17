@@ -61,7 +61,13 @@ Muốn tune ngưỡng CWV mà không đổi code: thêm **Repository variables**
 - 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75, mobile)
 - 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL)
 
-Luồng auto (chạy theo lịch) chỉ gửi Chat khi có ít nhất 1 cảnh báo (🔴/🟠) hoặc 1 URL lỗi fetch — không có gì bất thường thì im lặng, không alert. Luồng manual trigger luôn báo cáo đầy đủ về Chat, kể cả khi không có cảnh báo (đó là mục đích của việc trigger thủ công).
+Luồng auto (chạy theo lịch) chỉ gửi Chat khi có điều gì đó đáng nói — cảnh báo, lỗi fetch, hoặc tin tốt (xem dưới) — không thì im lặng, không alert. Luồng manual trigger luôn báo cáo đầy đủ về Chat, kể cả khi không có cảnh báo (đó là mục đích của việc trigger thủ công).
+
+Tin tốt (chỉ áp dụng cho luồng auto, cần lịch sử field data):
+- ✅ Chỉ số vừa quay lại ngưỡng Good, ngày trước đó còn vượt ngưỡng.
+- 🟢 Chỉ số tốt hơn median 28 ngày >20% (đối xứng với ngưỡng 🟠 xấu đi, tune qua hằng số `CWV_REL_BETTER` đầu `monitor.py`, không có env var riêng).
+
+Header của message Chat tự đổi theo nội dung: 💀 `[CWV Auto Alert]` nếu có ít nhất 1 cảnh báo/lỗi fetch, 🎉 `[CWV Auto Update]` nếu toàn tin tốt.
 
 Ngưỡng tuyệt đối (🔴) tune được qua env var, không cần sửa code:
 

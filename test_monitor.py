@@ -58,6 +58,34 @@ def test_history_and_anomalies():
     assert monitor.check_anomalies({}, hist) == []
 
 
+def test_check_improvements_recovered_to_good_threshold():
+    # Yesterday breached LCP's Good threshold, today is back under it -> recovery message
+    hist = [{"day": "2026-07-06", "lcp_ms": 3000, "inp_ms": 150, "cls": 0.05}]
+    today = {"lcp_ms": 2000, "inp_ms": 150, "cls": 0.05}
+    msgs = monitor.check_improvements(today, hist)
+    assert any("✅" in m and "LCP" in m for m in msgs)
+
+    # Already good yesterday -> no recovery message today
+    hist_already_good = [{"day": "2026-07-06", "lcp_ms": 2000, "inp_ms": 150, "cls": 0.05}]
+    assert monitor.check_improvements(today, hist_already_good) == []
+
+
+def test_check_improvements_better_than_median():
+    db = make_db()  # 28 days at lcp_ms=2000
+    hist = monitor.history(db, "2026-07-07", "https://example.com/")
+    much_better = {"lcp_ms": 1200, "inp_ms": 150, "cls": 0.05}
+    msgs = monitor.check_improvements(much_better, hist)
+    assert any("🟢" in m and "LCP" in m for m in msgs)
+
+    # Too little history -> only recovery checks fire, not the median comparison
+    short_hist = monitor.history(make_db(days=3), "2026-07-07", "https://example.com/")
+    msgs = monitor.check_improvements(much_better, short_hist)
+    assert all(m.startswith("✅") for m in msgs), msgs
+
+    # Missing metrics don't crash
+    assert monitor.check_improvements({}, hist) == []
+
+
 def test_check_anomalies_formats_lcp_inp_with_thousands_separator_and_cls_3_decimals():
     msgs = monitor.check_anomalies({"lcp_ms": 34189, "inp_ms": 12345, "cls": 0.1107290548610793}, [])
     assert any("LCP = 34,189ms" in m for m in msgs)
@@ -164,6 +192,8 @@ def test_data_source_label_follows_manual_trigger():
 if __name__ == "__main__":
     test_empty_secret_fails_fast_with_clear_message()
     test_history_and_anomalies()
+    test_check_improvements_recovered_to_good_threshold()
+    test_check_improvements_better_than_median()
     test_check_anomalies_formats_lcp_inp_with_thousands_separator_and_cls_3_decimals()
     test_fetch_cwv_parses_field_data()
     test_fetch_cwv_empty_when_no_crux_data()

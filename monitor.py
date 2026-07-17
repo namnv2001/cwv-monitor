@@ -37,7 +37,10 @@ CWV_ABS = {
     "cls": float(os.environ.get("CWV_CLS", 0.1)),
 }
 CWV_REL_WORSE = 0.20      # CWV worse than 28d median by >20%
+CWV_REL_BETTER = 0.20     # CWV better than 28d median by >20%
 MIN_HISTORY = 7           # days of data required before relative checks
+
+CWV_LABELS = {"lcp_ms": ("LCP", "ms"), "inp_ms": ("INP", "ms"), "cls": ("CLS", "")}
 
 # ---- Fetchers ----------------------------------------------------------------
 
@@ -148,11 +151,10 @@ def _fmt_metric(key, v):
 def check_anomalies(today, hist):
     msgs = []
     # Absolute CWV thresholds
-    labels = {"lcp_ms": ("LCP", "ms"), "inp_ms": ("INP", "ms"), "cls": ("CLS", "")}
     for key, limit in CWV_ABS.items():
         v = today.get(key)
         if v is not None and v > limit:
-            name, unit = labels[key]
+            name, unit = CWV_LABELS[key]
             msgs.append(f"🔴 {name} = {_fmt_metric(key, v)}{unit} vượt ngưỡng Good ({_fmt_metric(key, limit)}{unit})")
 
     if len(hist) < MIN_HISTORY:
@@ -162,8 +164,37 @@ def check_anomalies(today, hist):
     for key in CWV_ABS:
         v, med = today.get(key), _median(hist, key)
         if v and med and v > med * (1 + CWV_REL_WORSE):
-            name, unit = labels[key]
+            name, unit = CWV_LABELS[key]
             msgs.append(f"🟠 {name} = {_fmt_metric(key, v)}{unit}, xấu hơn {((v / med) - 1) * 100:.0f}% "
+                        f"so với median 28 ngày ({_fmt_metric(key, med)}{unit})")
+
+    return msgs
+
+
+def check_improvements(today, hist):
+    """Good news, mirrors check_anomalies: a metric recovering back under its Good threshold
+    (vs the last recorded day), or beating the 28d median by a wide margin. Auto flow alerts on
+    these too — a silent "no warnings" run still shouldn't hide meaningful improvement."""
+    msgs = []
+    # Recovered to Good threshold since the last recorded day
+    if hist:
+        prev = hist[0]
+        for key, limit in CWV_ABS.items():
+            v, pv = today.get(key), prev.get(key)
+            if v is not None and pv is not None and pv > limit and v <= limit:
+                name, unit = CWV_LABELS[key]
+                msgs.append(f"✅ {name} = {_fmt_metric(key, v)}{unit} đã về ngưỡng Good ({_fmt_metric(key, limit)}{unit}), "
+                            f"trước đó vượt ngưỡng ({_fmt_metric(key, pv)}{unit})")
+
+    if len(hist) < MIN_HISTORY:
+        return msgs  # not enough history for relative checks
+
+    # CWV better than 28d median
+    for key in CWV_ABS:
+        v, med = today.get(key), _median(hist, key)
+        if v and med and v < med * (1 - CWV_REL_BETTER):
+            name, unit = CWV_LABELS[key]
+            msgs.append(f"🟢 {name} = {_fmt_metric(key, v)}{unit}, cải thiện {((1 - v / med)) * 100:.0f}% "
                         f"so với median 28 ngày ({_fmt_metric(key, med)}{unit})")
 
     return msgs
@@ -196,21 +227,19 @@ def check_url(url, day, db):
     """Fetch + evaluate one URL. Returns (metrics_or_None, report_lines) — does not alert itself.
     Manual trigger fetches Lighthouse lab data (always available, no history) and always reports
     the full Performance/FCP/LCP/TBT/CLS/TTFB/NRTT breakdown (N/A for missing fields), even on
-    fetch failure. Scheduled runs fetch CrUX field data and only report on anomaly."""
+    fetch failure. Scheduled runs fetch CrUX field data and only report on anomaly or improvement."""
     metrics = fetch_lab_cwv(url) if MANUAL_TRIGGER else fetch_cwv(url)
     if not metrics:
         if MANUAL_TRIGGER:
             return None, [_report(url, {}) + " (không lấy được lab data - API lỗi/timeout)"]
         return None, [f"⚠️ {url}: không lấy được dữ liệu CWV field (không có trong CrUX hoặc API lỗi/timeout)"]
 
-    hist = [] if MANUAL_TRIGGER else history(db, day, url)
-    if not MANUAL_TRIGGER:
-        save(db, day, url, metrics)
-
-    anomalies = check_anomalies(metrics, hist)
     if MANUAL_TRIGGER:
-        return metrics, [_report(url, metrics)] + anomalies
-    return metrics, anomalies
+        return metrics, [_report(url, metrics)] + check_anomalies(metrics, [])
+
+    hist = history(db, day, url)
+    save(db, day, url, metrics)
+    return metrics, check_anomalies(metrics, hist) + check_improvements(metrics, hist)
 
 
 def main():
@@ -230,8 +259,8 @@ def main():
             chat_lines += msgs
             print(f"{url}: {metrics}")
         elif msgs:
-            chat_lines.append(f"*Cảnh báo {url} — {day}* [{_data_source_label()}]\n" + "\n".join(msgs))
-            print(f"{url}: alerted {len(msgs)} anomalies")
+            chat_lines.append(f"*{url} — {day}* [{_data_source_label()}]\n" + "\n".join(msgs))
+            print(f"{url}: alerted {len(msgs)} item(s)")
         else:
             print(f"{url} {day}: OK. Metrics: {metrics}")
 
@@ -239,11 +268,14 @@ def main():
         db.close()
 
     # Manual trigger always reports (that's the point of a manual check). Auto/scheduled runs
-    # only alert Chat when there's an actual warning/failure — silence on all-clear days.
+    # only alert Chat when there's something notable — a warning/failure or an improvement —
+    # silence on plain no-news days.
     if MANUAL_TRIGGER and chat_lines:
         alert("📌 *[CWV Report]*\n" + "\n\n".join(chat_lines))
     elif not MANUAL_TRIGGER and chat_lines:
-        alert("💀 *[CWV Auto Alert]*\n" + "\n\n".join(chat_lines))
+        has_warning = any(m in line for line in chat_lines for m in ("🔴", "🟠", "⚠️"))
+        header = "💀 *[CWV Auto Alert]*\n" if has_warning else "🎉 *[CWV Auto Update]*\n"
+        alert(header + "\n\n".join(chat_lines))
 
     if failures == len(SITE_URLS):
         sys.exit(1)
