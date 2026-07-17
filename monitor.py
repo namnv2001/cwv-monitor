@@ -29,6 +29,7 @@ if not SITE_URLS or not PSI_API_KEY or not CHAT_WEBHOOK:
     sys.exit("Missing SITE_URLS / PSI_API_KEY / CHAT_WEBHOOK — check GitHub repo Secrets (or .env locally)")
 
 PSI_TIMEOUT = 120         # seconds per API call — a full Lighthouse audit can take 60-90s+ on heavy pages
+PSI_MAX_ATTEMPTS = 3      # attempts on timeout before giving up (only timeouts are retried)
 
 # Thresholds — Google "Good" limits (p75) by default, override via env vars to tune without a code change
 CWV_ABS = {
@@ -44,16 +45,29 @@ CWV_LABELS = {"lcp_ms": ("LCP", "ms"), "inp_ms": ("INP", "ms"), "cls": ("CLS", "
 
 # ---- Fetchers ----------------------------------------------------------------
 
+def _is_timeout(e):
+    """A plain socket read timeout raises TimeoutError directly; a connect-phase timeout comes
+    wrapped in urllib.error.URLError(reason=TimeoutError(...)) instead."""
+    return isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+
+
 def _psi_fetch(url):
-    """Raw PSI API response for `url`, or None on network error/timeout/malformed JSON."""
+    """Raw PSI API response for `url`, or None on network error/timeout/malformed JSON.
+    Retries up to PSI_MAX_ATTEMPTS times on timeout only — a 4xx/malformed-JSON response
+    won't succeed on retry, so those fail immediately without burning attempts."""
     q = urllib.parse.urlencode({"url": url, "key": PSI_API_KEY, "strategy": "mobile"})
-    try:
-        with urllib.request.urlopen(
-                f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?{q}", timeout=PSI_TIMEOUT) as r:
-            return json.load(r)
-    except Exception as e:  # network error, timeout, rate limit, malformed JSON
-        print(f"PSI call failed for {url}: {e}", file=sys.stderr)
-        return None
+    api_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?{q}"
+    for attempt in range(1, PSI_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(api_url, timeout=PSI_TIMEOUT) as r:
+                return json.load(r)
+        except Exception as e:  # network error, timeout, rate limit, malformed JSON
+            if _is_timeout(e) and attempt < PSI_MAX_ATTEMPTS:
+                print(f"PSI call timed out for {url} (attempt {attempt}/{PSI_MAX_ATTEMPTS}), retrying: {e}",
+                      file=sys.stderr)
+                continue
+            print(f"PSI call failed for {url}: {e}", file=sys.stderr)
+            return None
 
 
 def fetch_cwv(url):

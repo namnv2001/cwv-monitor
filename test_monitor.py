@@ -130,6 +130,36 @@ def test_fetch_cwv_defends_against_api_failure():
         assert monitor.fetch_cwv("https://example.com/") == {}
 
 
+def test_psi_fetch_retries_on_timeout_then_succeeds():
+    fake_resp = MagicMock()
+    fake_resp.__enter__.return_value = fake_resp
+
+    def urlopen_side_effect(*a, **kw):
+        urlopen_side_effect.calls += 1
+        if urlopen_side_effect.calls < monitor.PSI_MAX_ATTEMPTS:
+            raise TimeoutError("The read operation timed out")
+        return fake_resp
+    urlopen_side_effect.calls = 0
+
+    with patch.object(monitor.urllib.request, "urlopen", side_effect=urlopen_side_effect), \
+         patch.object(monitor.json, "load", return_value={"ok": True}):
+        result = monitor._psi_fetch("https://example.com/")
+    assert result == {"ok": True}
+    assert urlopen_side_effect.calls == monitor.PSI_MAX_ATTEMPTS
+
+
+def test_psi_fetch_gives_up_after_max_attempts_on_persistent_timeout():
+    with patch.object(monitor.urllib.request, "urlopen", side_effect=TimeoutError("timed out")) as m:
+        assert monitor._psi_fetch("https://example.com/") is None
+    assert m.call_count == monitor.PSI_MAX_ATTEMPTS
+
+
+def test_psi_fetch_does_not_retry_non_timeout_errors():
+    with patch.object(monitor.urllib.request, "urlopen", side_effect=OSError("some other error")) as m:
+        assert monitor._psi_fetch("https://example.com/") is None
+    assert m.call_count == 1
+
+
 def test_fetch_lab_cwv_parses_lighthouse_audits():
     payload = {"lighthouseResult": {
         "categories": {"performance": {"score": 0.35}},
@@ -206,6 +236,9 @@ if __name__ == "__main__":
     test_fetch_cwv_parses_field_data()
     test_fetch_cwv_empty_when_no_crux_data()
     test_fetch_cwv_defends_against_api_failure()
+    test_psi_fetch_retries_on_timeout_then_succeeds()
+    test_psi_fetch_gives_up_after_max_attempts_on_persistent_timeout()
+    test_psi_fetch_does_not_retry_non_timeout_errors()
     test_fetch_lab_cwv_parses_lighthouse_audits()
     test_fetch_lab_cwv_empty_when_no_lighthouse_result()
     test_manual_report_always_has_full_metrics_even_on_fetch_failure()
