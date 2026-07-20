@@ -3,7 +3,7 @@ name: Daily CWV monitor
 on:
   schedule:
     - cron: '0 9 * * *' # 16:00 VN daily — field-data run, saves to data.db
-    - cron: '0 2 * * 1' # 09:00 VN Monday — manual-trigger flow, lab data, no db write
+    - cron: '0 23 * * 0' # 06:00 VN Monday — manual-trigger flow, lab data, no db write
   workflow_dispatch: {}
 
 permissions:
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # ad-hoc workflow_dispatch or the weekly Monday cron => manual/lab-data flow, never touch data.db
-      MANUAL_TRIGGER: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * 1' }}
+      MANUAL_TRIGGER: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * 0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
