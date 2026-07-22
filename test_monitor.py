@@ -58,11 +58,11 @@ def test_history_and_anomalies():
     assert monitor.check_anomalies({}, hist) == []
 
 
-def test_is_weekend():
-    assert monitor._is_weekend("2026-07-18") is True   # Saturday
-    assert monitor._is_weekend("2026-07-19") is True   # Sunday
-    assert monitor._is_weekend("2026-07-17") is False  # Friday
-    assert monitor._is_weekend("2026-07-20") is False  # Monday
+def test_is_monday():
+    assert monitor._is_monday("2026-07-20") is True   # Monday
+    assert monitor._is_monday("2026-07-18") is False  # Saturday
+    assert monitor._is_monday("2026-07-19") is False  # Sunday
+    assert monitor._is_monday("2026-07-17") is False  # Friday
 
 
 def test_check_improvements_recovered_to_good_threshold():
@@ -229,7 +229,7 @@ def test_data_source_label_follows_manual_trigger():
 if __name__ == "__main__":
     test_empty_secret_fails_fast_with_clear_message()
     test_history_and_anomalies()
-    test_is_weekend()
+    test_is_monday()
     test_check_improvements_recovered_to_good_threshold()
     test_check_improvements_better_than_median()
     test_check_anomalies_formats_lcp_inp_with_thousands_separator_and_cls_3_decimals()
