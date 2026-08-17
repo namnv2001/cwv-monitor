@@ -32,17 +32,43 @@ python3 monitor.py
 
 Mỗi URL lấy CrUX field data (p75, số liệu tổng hợp 28 ngày từ người dùng thật) qua PSI API. Gọi API timeout sẽ tự retry tối đa `PSI_MAX_ATTEMPTS` lần (mặc định 3, chỉ áp dụng cho timeout — lỗi khác như 4xx/JSON hỏng không retry vì thử lại cũng không thành công). Một URL vẫn lỗi sau khi retry hoặc không có trong CrUX (traffic thấp) sẽ báo cảnh báo riêng, các URL khác vẫn tiếp tục chạy.
 
+## Mobile & desktop
+
+Mỗi URL được đo trên **cả 2 device**: `mobile` và `desktop` (hằng số `STRATEGIES` đầu `monitor.py`). PSI chỉ nhận 1 strategy mỗi lần gọi, nên số lần gọi API (và thời gian chạy) gấp đôi so với chỉ đo mobile — lưu ý nếu API key có quota chặt.
+
+Lịch sử trong `data.db` tách riêng theo device (khoá chính `(day, url, strategy)`), median 28 ngày của desktop chỉ so với desktop, không bao giờ lẫn với mobile. DB cũ (khoá chính `(day, url)`, chỉ có số liệu mobile) tự động migrate ở lần chạy đầu tiên: bảng được dựng lại và toàn bộ dữ liệu cũ gán `strategy = 'mobile'`, không mất dòng nào.
+
+Message Chat chia thành từng khối theo device, device nào không có gì để báo thì bỏ hẳn khối đó:
+
+```
+💀 *[CWV Auto Alert]*
+📱 *MOBILE*
+*https://example.com/ — 2026-08-17* [field data (CrUX)]
+🔴 LCP = 3,543ms vượt ngưỡng Good (2,500ms)
+
+🖥️ *DESKTOP*
+*https://example.com/ — 2026-08-17* [field data (CrUX)]
+🟢 LCP = 1,100ms, cải thiện 45% so với median 28 ngày (2,000ms)
+```
+
 Không có dependency ngoài stdlib. Test logic: `python3 test_monitor.py` — CI chạy test này tự động trên mỗi push/PR (xem `.github/workflows/test.yml`), không cần setup gì thêm.
 
 ## Trigger thủ công
 
 Set `MANUAL_TRIGGER=true` (hoặc chạy workflow bằng nút **Run workflow** trên GitHub Actions — đã tự set biến này). Luồng này khác luồng chạy theo lịch:
 - **Lấy số liệu từ lab data (Lighthouse)** thay vì field data (CrUX) — một lần chạy Lighthouse mô phỏng ngay lúc trigger, phản ánh đúng trạng thái trang hiện tại, không cần đợi đủ traffic thật như CrUX.
-- **Luôn báo đủ breakdown về Chat** cho từng URL, không chỉ khi có bất thường:
+- **Luôn báo đủ breakdown về Chat** cho từng URL trên từng device, không chỉ khi có bất thường:
   ```
+  📌 *[CWV Report]*
+  📱 *MOBILE*
   *https://example.com/* [lab data]
   Performance: 35/100
   FCP: 2.8 s | LCP: 35.1 s | TBT: 1,560 ms | CLS: 0.016 | TTFB: Root document took 1,230 ms | NRTT: 280 ms
+
+  🖥️ *DESKTOP*
+  *https://example.com/* [lab data]
+  Performance: 78/100
+  FCP: 1.1 s | LCP: 2.4 s | TBT: 210 ms | CLS: 0.004 | TTFB: Root document took 420 ms | NRTT: 40 ms
   ```
   TBT (Total Blocking Time) thay cho INP làm proxy tương tác — lab không mô phỏng tương tác người dùng thật nên không có INP. Thiếu chỉ số nào hiện `N/A`.
 - **Không lưu vào `data.db`** — dùng để test nhanh, không ảnh hưởng lịch sử/so sánh median.
@@ -58,8 +84,8 @@ Muốn tune ngưỡng CWV mà không đổi code: thêm **Repository variables**
 
 ## Luật cảnh báo
 
-- 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75, mobile)
-- 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL)
+- 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75) — cùng ngưỡng cho cả mobile lẫn desktop
+- 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL, từng device)
 
 Luồng auto (chạy theo lịch) chỉ gửi Chat khi có điều gì đó đáng nói — cảnh báo, lỗi fetch, hoặc tin tốt (xem dưới) — không thì im lặng, không alert. Luồng manual trigger luôn báo cáo đầy đủ về Chat, kể cả khi không có cảnh báo (đó là mục đích của việc trigger thủ công).
 
