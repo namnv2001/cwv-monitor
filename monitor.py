@@ -31,6 +31,11 @@ if not SITE_URLS or not PSI_API_KEY or not CHAT_WEBHOOK:
 PSI_TIMEOUT = 120         # seconds per API call — a full Lighthouse audit can take 60-90s+ on heavy pages
 PSI_MAX_ATTEMPTS = 3      # attempts on timeout before giving up (only timeouts are retried)
 
+# Every URL is measured on both strategies — PSI runs one strategy per call, so this doubles
+# the number of API calls (and the run time) rather than being a single wider request.
+STRATEGIES = ["mobile", "desktop"]
+STRATEGY_LABELS = {"mobile": "📱 *MOBILE*", "desktop": "🖥️ *DESKTOP*"}
+
 # Thresholds — Google "Good" limits (p75) by default, override via env vars to tune without a code change
 CWV_ABS = {
     "lcp_ms": int(os.environ.get("CWV_LCP_MS", 2500)),
@@ -51,11 +56,12 @@ def _is_timeout(e):
     return isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
 
 
-def _psi_fetch(url):
-    """Raw PSI API response for `url`, or None on network error/timeout/malformed JSON.
-    Retries up to PSI_MAX_ATTEMPTS times on timeout only — a 4xx/malformed-JSON response
-    won't succeed on retry, so those fail immediately without burning attempts."""
-    q = urllib.parse.urlencode({"url": url, "key": PSI_API_KEY, "strategy": "mobile"})
+def _psi_fetch(url, strategy="mobile"):
+    """Raw PSI API response for `url` on `strategy` (mobile/desktop), or None on network
+    error/timeout/malformed JSON. Retries up to PSI_MAX_ATTEMPTS times on timeout only — a
+    4xx/malformed-JSON response won't succeed on retry, so those fail immediately without
+    burning attempts."""
+    q = urllib.parse.urlencode({"url": url, "key": PSI_API_KEY, "strategy": strategy})
     api_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?{q}"
     for attempt in range(1, PSI_MAX_ATTEMPTS + 1):
         try:
@@ -70,11 +76,11 @@ def _psi_fetch(url):
             return None
 
 
-def fetch_cwv(url):
-    """CrUX field data (p75, real-user 28-day aggregate) via PSI API for `url`.
-    Returns {} if the URL has no CrUX field data (low traffic) or the API
+def fetch_cwv(url, strategy="mobile"):
+    """CrUX field data (p75, real-user 28-day aggregate) via PSI API for `url` on `strategy`.
+    Returns {} if the URL has no CrUX field data for that device (low traffic) or the API
     call failed/timed out — either way there's nothing to save/alert on."""
-    data = _psi_fetch(url)
+    data = _psi_fetch(url, strategy)
     if data is None:
         return {}
     m = data.get("loadingExperience", {}).get("metrics", {})
@@ -97,13 +103,13 @@ LAB_AUDITS = {  # report key -> Lighthouse audit id
 }
 
 
-def fetch_lab_cwv(url):
-    """Lighthouse lab data (single simulated run against current page) via PSI API for `url`.
-    Used for manual triggers: unlike CrUX field data it's always available (no real-traffic
-    requirement) and reflects the page as it is right now rather than a 28-day rolling average.
-    No INP here — a lab run has no real user interacting with the page — TBT is Lighthouse's
-    lab proxy for interactivity instead, shown in lab_detail alongside FCP/TTFB/RTT."""
-    data = _psi_fetch(url)
+def fetch_lab_cwv(url, strategy="mobile"):
+    """Lighthouse lab data (single simulated run against current page) via PSI API for `url`
+    on `strategy`. Used for manual triggers: unlike CrUX field data it's always available (no
+    real-traffic requirement) and reflects the page as it is right now rather than a 28-day
+    rolling average. No INP here — a lab run has no real user interacting with the page — TBT is
+    Lighthouse's lab proxy for interactivity instead, shown in lab_detail alongside FCP/TTFB/RTT."""
+    data = _psi_fetch(url, strategy)
     if data is None:
         return {}
     lr = data.get("lighthouseResult", {})
@@ -125,25 +131,44 @@ def fetch_lab_cwv(url):
 SCHEMA = """CREATE TABLE IF NOT EXISTS daily (
   day TEXT NOT NULL,
   url TEXT NOT NULL,
+  strategy TEXT NOT NULL DEFAULT 'mobile',
   lcp_ms INTEGER, inp_ms INTEGER, cls REAL,
-  PRIMARY KEY (day, url)
+  PRIMARY KEY (day, url, strategy)
 )"""
 
 COLS = ["lcp_ms", "inp_ms", "cls"]
 
 
-def save(db, day, url, metrics):
-    db.execute(
-        f"INSERT OR REPLACE INTO daily (day, url, {', '.join(COLS)}) VALUES (?, ?, {', '.join('?' * len(COLS))})",
-        [day, url] + [metrics.get(c) for c in COLS])
+def migrate(db):
+    """Pre-desktop DBs have PK (day, url), which rejects a desktop row for a day/url already
+    measured on mobile. SQLite can't ALTER a primary key, so rebuild the table and backfill the
+    existing (mobile-only) rows. No-op once the strategy column exists."""
+    if "strategy" in [r[1] for r in db.execute("PRAGMA table_info(daily)")]:
+        return
+    db.executescript(
+        f"ALTER TABLE daily RENAME TO daily_old;"
+        f"{SCHEMA};"
+        f"INSERT INTO daily (day, url, strategy, {', '.join(COLS)}) "
+        f"  SELECT day, url, 'mobile', {', '.join(COLS)} FROM daily_old;"
+        f"DROP TABLE daily_old;")
     db.commit()
 
 
-def history(db, day, url, n=28):
-    """Rows for `url` strictly before `day`, most recent first, as list of dicts."""
+def save(db, day, url, strategy, metrics):
+    db.execute(
+        f"INSERT OR REPLACE INTO daily (day, url, strategy, {', '.join(COLS)}) "
+        f"VALUES (?, ?, ?, {', '.join('?' * len(COLS))})",
+        [day, url, strategy] + [metrics.get(c) for c in COLS])
+    db.commit()
+
+
+def history(db, day, url, strategy, n=28):
+    """Rows for `url` on `strategy` strictly before `day`, most recent first, as list of dicts.
+    Kept per-device: a desktop median must never be compared against mobile history."""
     cur = db.execute(
-        f"SELECT day, {', '.join(COLS)} FROM daily WHERE day < ? AND url = ? ORDER BY day DESC LIMIT ?",
-        (day, url, n))
+        f"SELECT day, {', '.join(COLS)} FROM daily WHERE day < ? AND url = ? AND strategy = ? "
+        f"ORDER BY day DESC LIMIT ?",
+        (day, url, strategy, n))
     return [dict(zip(["day"] + COLS, row)) for row in cur.fetchall()]
 
 # ---- Anomaly checks ----------------------------------------------------------
@@ -241,12 +266,13 @@ def _report(url, metrics):
             f"Performance: {score if score is not None else 'N/A'}/100\n{line}")
 
 
-def check_url(url, day, db):
-    """Fetch + evaluate one URL. Returns (metrics_or_None, report_lines) — does not alert itself.
-    Manual trigger fetches Lighthouse lab data (always available, no history) and always reports
-    the full Performance/FCP/LCP/TBT/CLS/TTFB/NRTT breakdown (N/A for missing fields), even on
-    fetch failure. Scheduled runs fetch CrUX field data and only report on anomaly or improvement."""
-    metrics = fetch_lab_cwv(url) if MANUAL_TRIGGER else fetch_cwv(url)
+def check_url(url, strategy, day, db):
+    """Fetch + evaluate one URL on one device strategy. Returns (metrics_or_None, report_lines)
+    — does not alert itself. Manual trigger fetches Lighthouse lab data (always available, no
+    history) and always reports the full Performance/FCP/LCP/TBT/CLS/TTFB/NRTT breakdown (N/A for
+    missing fields), even on fetch failure. Scheduled runs fetch CrUX field data and only report
+    on anomaly or improvement, compared against that same device's history."""
+    metrics = fetch_lab_cwv(url, strategy) if MANUAL_TRIGGER else fetch_cwv(url, strategy)
     if not metrics:
         if MANUAL_TRIGGER:
             return None, [_report(url, {}) + " (không lấy được lab data - API lỗi/timeout)"]
@@ -255,8 +281,8 @@ def check_url(url, day, db):
     if MANUAL_TRIGGER:
         return metrics, [_report(url, metrics)] + check_anomalies(metrics, [])
 
-    hist = history(db, day, url)
-    save(db, day, url, metrics)
+    hist = history(db, day, url, strategy)
+    save(db, day, url, strategy, metrics)
     return metrics, check_anomalies(metrics, hist) + check_improvements(metrics, hist)
 
 
@@ -265,25 +291,31 @@ def main():
     db = None if MANUAL_TRIGGER else sqlite3.connect(DB_FILE)
     if db:
         db.execute(SCHEMA)
+        migrate(db)
 
-    failures, chat_lines = 0, []
-    for url in SITE_URLS:
-        metrics, msgs = check_url(url, day, db)
-        if metrics is None:
-            failures += 1
-            chat_lines += msgs
-            print(msgs[0])
-        elif MANUAL_TRIGGER:
-            chat_lines += msgs
-            print(f"{url}: {metrics}")
-        elif msgs:
-            chat_lines.append(f"*{url} — {day}* [{_data_source_label()}]\n" + "\n".join(msgs))
-            print(f"{url}: alerted {len(msgs)} item(s)")
-        else:
-            print(f"{url} {day}: OK. Metrics: {metrics}")
+    failures, by_device = 0, {s: [] for s in STRATEGIES}
+    for strategy in STRATEGIES:
+        for url in SITE_URLS:
+            metrics, msgs = check_url(url, strategy, day, db)
+            if metrics is None:
+                failures += 1
+                by_device[strategy] += msgs
+                print(f"[{strategy}] {msgs[0]}")
+            elif MANUAL_TRIGGER:
+                by_device[strategy] += msgs
+                print(f"[{strategy}] {url}: {metrics}")
+            elif msgs:
+                by_device[strategy].append(f"*{url} — {day}* [{_data_source_label()}]\n" + "\n".join(msgs))
+                print(f"[{strategy}] {url}: alerted {len(msgs)} item(s)")
+            else:
+                print(f"[{strategy}] {url} {day}: OK. Metrics: {metrics}")
 
     if db:
         db.close()
+
+    # One section per device, devices with nothing to report are dropped entirely rather than
+    # printed as an empty heading.
+    chat_lines = [f"{STRATEGY_LABELS[s]}\n" + "\n\n".join(by_device[s]) for s in STRATEGIES if by_device[s]]
 
     # Warnings only alert on Monday — other days stay quiet unless there's an improvement to
     # report, which is worth surfacing regardless of day.
@@ -303,7 +335,7 @@ def main():
         header = "💀 *[CWV Auto Alert]*\n" if has_warning else "🎉 *[CWV Auto Update]*\n"
         alert(header + "\n\n".join(chat_lines))
 
-    if failures == len(SITE_URLS):
+    if failures == len(SITE_URLS) * len(STRATEGIES):
         sys.exit(1)
 
 

@@ -14,12 +14,12 @@ os.environ.setdefault("CHAT_WEBHOOK", "http://localhost/x")
 import monitor
 
 
-def make_db(days=28, url="https://example.com/"):
+def make_db(days=28, url="https://example.com/", strategy="mobile"):
     db = sqlite3.connect(":memory:")
     db.execute(monitor.SCHEMA)
     for i in range(1, days + 1):
         d = (date(2026, 7, 7) - timedelta(days=i)).isoformat()
-        monitor.save(db, d, url, {"lcp_ms": 2000, "inp_ms": 150, "cls": 0.05})
+        monitor.save(db, d, url, strategy, {"lcp_ms": 2000, "inp_ms": 150, "cls": 0.05})
     return db
 
 
@@ -35,11 +35,11 @@ def test_empty_secret_fails_fast_with_clear_message():
 def test_history_and_anomalies():
     day = "2026-07-07"
     db = make_db()
-    hist = monitor.history(db, day, "https://example.com/")
+    hist = monitor.history(db, day, "https://example.com/", "mobile")
     assert len(hist) == 28 and hist[0]["day"] == "2026-07-06"
 
     # Other URLs must not leak into this URL's history
-    assert monitor.history(db, day, "https://other.com/") == []
+    assert monitor.history(db, day, "https://other.com/", "mobile") == []
 
     good = {"lcp_ms": 2000, "inp_ms": 150, "cls": 0.05}
     assert monitor.check_anomalies(good, hist) == []
@@ -50,7 +50,7 @@ def test_history_and_anomalies():
     assert any("LCP" in m for m in msgs)
 
     # Too little history -> only absolute checks fire
-    short_hist = monitor.history(make_db(days=3), day, "https://example.com/")
+    short_hist = monitor.history(make_db(days=3), day, "https://example.com/", "mobile")
     msgs = monitor.check_anomalies(bad, short_hist)
     assert all(m.startswith("🔴") for m in msgs), msgs
 
@@ -79,13 +79,13 @@ def test_check_improvements_recovered_to_good_threshold():
 
 def test_check_improvements_better_than_median():
     db = make_db()  # 28 days at lcp_ms=2000
-    hist = monitor.history(db, "2026-07-07", "https://example.com/")
+    hist = monitor.history(db, "2026-07-07", "https://example.com/", "mobile")
     much_better = {"lcp_ms": 1200, "inp_ms": 150, "cls": 0.05}
     msgs = monitor.check_improvements(much_better, hist)
     assert any("🟢" in m and "LCP" in m for m in msgs)
 
     # Too little history -> only recovery checks fire, not the median comparison
-    short_hist = monitor.history(make_db(days=3), "2026-07-07", "https://example.com/")
+    short_hist = monitor.history(make_db(days=3), "2026-07-07", "https://example.com/", "mobile")
     msgs = monitor.check_improvements(much_better, short_hist)
     assert all(m.startswith("✅") for m in msgs), msgs
 
@@ -191,7 +191,7 @@ def test_fetch_lab_cwv_empty_when_no_lighthouse_result():
 def test_manual_report_always_has_full_metrics_even_on_fetch_failure():
     with patch.object(monitor, "MANUAL_TRIGGER", True), \
          patch.object(monitor, "fetch_lab_cwv", return_value={}):
-        metrics, msgs = monitor.check_url("https://example.com/", "2026-07-07", db=None)
+        metrics, msgs = monitor.check_url("https://example.com/", "mobile", "2026-07-07", db=None)
     assert metrics is None  # still counts as a failure for the exit-code check
     assert "lab data" in msgs[0]
     assert "Performance: N/A/100" in msgs[0]
@@ -206,7 +206,7 @@ def test_manual_report_shows_full_lab_breakdown():
     }
     with patch.object(monitor, "MANUAL_TRIGGER", True), \
          patch.object(monitor, "fetch_lab_cwv", return_value=lab_metrics):
-        metrics, msgs = monitor.check_url("https://example.com/", "2026-07-07", db=None)
+        metrics, msgs = monitor.check_url("https://example.com/", "mobile", "2026-07-07", db=None)
     assert metrics is not None
     assert "lab data" in msgs[0]
     assert "Performance: 35/100" in msgs[0]
@@ -215,6 +215,77 @@ def test_manual_report_shows_full_lab_breakdown():
     # LCP way over the Good threshold -> absolute anomaly still fires on lab data
     assert "lab data" in msgs[0]  # source label is on the report header line
     assert any("🔴" in m and "LCP" in m for m in msgs)
+
+
+def test_psi_fetch_sends_requested_strategy():
+    with patch.object(monitor.urllib.request, "urlopen", side_effect=OSError("stop")) as m:
+        monitor.fetch_cwv("https://example.com/", "desktop")
+        monitor.fetch_lab_cwv("https://example.com/", "mobile")
+    called = [c.args[0] for c in m.call_args_list]
+    assert "strategy=desktop" in called[0]
+    assert "strategy=mobile" in called[1]
+
+
+def test_history_is_per_device():
+    # Same day+url on both devices must coexist (old PK was (day, url)) and never mix
+    db = make_db(strategy="mobile")
+    monitor.save(db, "2026-07-06", "https://example.com/", "desktop",
+                 {"lcp_ms": 900, "inp_ms": 80, "cls": 0.01})
+    assert len(monitor.history(db, "2026-07-07", "https://example.com/", "mobile")) == 28
+    desktop = monitor.history(db, "2026-07-07", "https://example.com/", "desktop")
+    assert len(desktop) == 1 and desktop[0]["lcp_ms"] == 900
+
+
+def test_migrate_backfills_pre_desktop_db_as_mobile():
+    db = sqlite3.connect(":memory:")
+    db.execute("""CREATE TABLE daily (day TEXT NOT NULL, url TEXT NOT NULL,
+                  lcp_ms INTEGER, inp_ms INTEGER, cls REAL, PRIMARY KEY (day, url))""")
+    db.execute("INSERT INTO daily VALUES ('2026-07-06', 'https://example.com/', 2000, 150, 0.05)")
+    monitor.migrate(db)
+    hist = monitor.history(db, "2026-07-07", "https://example.com/", "mobile")
+    assert len(hist) == 1 and hist[0]["lcp_ms"] == 2000
+    # ...and the rebuilt PK now accepts a desktop row for that same day+url
+    monitor.save(db, "2026-07-06", "https://example.com/", "desktop", {"lcp_ms": 900})
+    assert len(monitor.history(db, "2026-07-07", "https://example.com/", "desktop")) == 1
+    monitor.migrate(db)  # idempotent — second call must not wipe or re-copy anything
+    assert db.execute("SELECT count(*) FROM daily").fetchone()[0] == 2
+
+
+def test_main_splits_chat_message_by_device():
+    sent = []
+
+    def fake_check_url(url, strategy, day, db):
+        return {"lcp_ms": 1}, [f"report for {url} on {strategy}"]
+
+    with patch.object(monitor, "MANUAL_TRIGGER", True), \
+         patch.object(monitor, "SITE_URLS", ["https://example.com/"]), \
+         patch.object(monitor, "check_url", fake_check_url), \
+         patch.object(monitor, "alert", sent.append):
+        monitor.main()
+
+    text = sent[0]
+    assert "📱 *MOBILE*" in text and "🖥️ *DESKTOP*" in text
+    assert text.index("📱 *MOBILE*") < text.index("🖥️ *DESKTOP*")
+    # each URL's result sits under its own device heading
+    assert "📱 *MOBILE*\nreport for https://example.com/ on mobile" in text
+    assert "🖥️ *DESKTOP*\nreport for https://example.com/ on desktop" in text
+
+
+def test_main_omits_device_section_with_nothing_to_report():
+    sent = []
+
+    def fake_check_url(url, strategy, day, db):
+        return ({"lcp_ms": 1}, ["mobile warning 🔴"]) if strategy == "mobile" else ({"lcp_ms": 1}, [])
+
+    with patch.object(monitor, "MANUAL_TRIGGER", False), \
+         patch.object(monitor, "SITE_URLS", ["https://example.com/"]), \
+         patch.object(monitor, "check_url", fake_check_url), \
+         patch.object(monitor, "_is_monday", lambda day: True), \
+         patch.object(monitor, "DB_FILE", ":memory:"), \
+         patch.object(monitor, "alert", sent.append):
+        monitor.main()
+
+    assert "📱 *MOBILE*" in sent[0] and "🖥️ *DESKTOP*" not in sent[0]
 
 
 def test_data_source_label_follows_manual_trigger():
@@ -243,5 +314,10 @@ if __name__ == "__main__":
     test_fetch_lab_cwv_empty_when_no_lighthouse_result()
     test_manual_report_always_has_full_metrics_even_on_fetch_failure()
     test_manual_report_shows_full_lab_breakdown()
+    test_psi_fetch_sends_requested_strategy()
+    test_history_is_per_device()
+    test_migrate_backfills_pre_desktop_db_as_mobile()
+    test_main_splits_chat_message_by_device()
+    test_main_omits_device_section_with_nothing_to_report()
     test_data_source_label_follows_manual_trigger()
     print("All checks passed")
