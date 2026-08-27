@@ -48,6 +48,13 @@ MIN_HISTORY = 7           # days of data required before relative checks
 
 CWV_LABELS = {"lcp_ms": ("LCP", "ms"), "inp_ms": ("INP", "ms"), "cls": ("CLS", "")}
 
+# Field data is a 28-day rolling p75, so a breach repeated day after day is the same fact
+# restated, not news. Only a *change* of state interrupts on a random Tuesday: 🚨 just crossed
+# the Good threshold, ✅ just recovered. Standing state (🔴 still over, 🟠/🟢 vs the 28d median,
+# ⚠️ no data) waits for the Monday digest.
+URGENT = ("🚨", "✅")
+WARNING = ("🚨", "🔴", "🟠", "⚠️")
+
 # ---- Fetchers ----------------------------------------------------------------
 
 def _is_timeout(e):
@@ -192,21 +199,34 @@ def _fmt_metric(key, v):
 
 
 def check_anomalies(today, hist):
+    """Threshold and trend warnings for `today`. A breach is split by whether it is new:
+    🚨 crossed the Good threshold since the last recorded day (an incident — alerted any day),
+    🔴 was already over it (a standing breach — Monday digest only)."""
     msgs = []
+    prev = hist[0] if hist else {}
     # Absolute CWV thresholds
     for key, limit in CWV_ABS.items():
-        v = today.get(key)
-        if v is not None and v > limit:
-            name, unit = CWV_LABELS[key]
-            msgs.append(f"🔴 {name} = {_fmt_metric(key, v)}{unit} vượt ngưỡng Good ({_fmt_metric(key, limit)}{unit})")
+        v, pv = today.get(key), prev.get(key)
+        if v is None or v <= limit:
+            continue
+        name, unit = CWV_LABELS[key]
+        over = f"{name} = {_fmt_metric(key, v)}{unit} vượt ngưỡng Good ({_fmt_metric(key, limit)}{unit})"
+        # pv is None on the first ever row for a url/strategy (or a manual/lab run, which has no
+        # history at all) — nothing crossed, so don't page: report it as standing state.
+        if pv is not None and pv <= limit:
+            msgs.append(f"🚨 {over} — trước đó {_fmt_metric(key, pv)}{unit}")
+        else:
+            msgs.append(f"🔴 {over}")
 
     if len(hist) < MIN_HISTORY:
         return msgs  # not enough history for relative checks
 
-    # CWV worse than 28d median (history is only ever field data — manual trigger skips it)
-    for key in CWV_ABS:
+    # Worse than the 28d median — only meaningful once the metric is already over the limit.
+    # Both series are the same rolling 28d aggregate, and CLS is quantised at 0.01, so an
+    # ungated check reads 0.06 -> 0.10 as "+67% worse" while both values are still Good.
+    for key, limit in CWV_ABS.items():
         v, med = today.get(key), _median(hist, key)
-        if v and med and v > med * (1 + CWV_REL_WORSE):
+        if v and med and v > limit and v > med * (1 + CWV_REL_WORSE):
             name, unit = CWV_LABELS[key]
             msgs.append(f"🟠 {name} = {_fmt_metric(key, v)}{unit}, xấu hơn {((v / med) - 1) * 100:.0f}% "
                         f"so với median 28 ngày ({_fmt_metric(key, med)}{unit})")
@@ -266,24 +286,35 @@ def _report(url, metrics):
             f"Performance: {score if score is not None else 'N/A'}/100\n{line}")
 
 
+def _off_monday_filter(msgs, day):
+    """Off Monday, drop everything that isn't a state change — see URGENT. Covers the ⚠️
+    no-data line too: a URL that has been missing from CrUX for weeks is standing state, and a
+    run where every URL fails still exits 1 regardless of what it posted to Chat."""
+    if MANUAL_TRIGGER or _is_monday(day):
+        return msgs
+    return [m for m in msgs if any(u in m for u in URGENT)]
+
+
 def check_url(url, strategy, day, db):
     """Fetch + evaluate one URL on one device strategy. Returns (metrics_or_None, report_lines)
     — does not alert itself. Manual trigger fetches Lighthouse lab data (always available, no
     history) and always reports the full Performance/FCP/LCP/TBT/CLS/TTFB/NRTT breakdown (N/A for
     missing fields), even on fetch failure. Scheduled runs fetch CrUX field data and only report
-    on anomaly or improvement, compared against that same device's history."""
+    on anomaly or improvement, compared against that same device's history — and off Monday, only
+    on a threshold crossing (see URGENT)."""
     metrics = fetch_lab_cwv(url, strategy) if MANUAL_TRIGGER else fetch_cwv(url, strategy)
     if not metrics:
         if MANUAL_TRIGGER:
             return None, [_report(url, {}) + " (không lấy được lab data - API lỗi/timeout)"]
-        return None, [f"⚠️ {url}: không lấy được dữ liệu CWV field (không có trong CrUX hoặc API lỗi/timeout)"]
+        return None, _off_monday_filter(
+            [f"⚠️ {url}: không lấy được dữ liệu CWV field (không có trong CrUX hoặc API lỗi/timeout)"], day)
 
     if MANUAL_TRIGGER:
         return metrics, [_report(url, metrics)] + check_anomalies(metrics, [])
 
     hist = history(db, day, url, strategy)
     save(db, day, url, strategy, metrics)
-    return metrics, check_anomalies(metrics, hist) + check_improvements(metrics, hist)
+    return metrics, _off_monday_filter(check_anomalies(metrics, hist) + check_improvements(metrics, hist), day)
 
 
 def main():
@@ -300,7 +331,7 @@ def main():
             if metrics is None:
                 failures += 1
                 by_device[strategy] += msgs
-                print(f"[{strategy}] {msgs[0]}")
+                print(f"[{strategy}] {msgs[0] if msgs else f'{url}: fetch failed (chờ digest thứ 2)'}")
             elif MANUAL_TRIGGER:
                 by_device[strategy] += msgs
                 print(f"[{strategy}] {url}: {metrics}")
@@ -317,21 +348,13 @@ def main():
     # printed as an empty heading.
     chat_lines = [f"{STRATEGY_LABELS[s]}\n" + "\n\n".join(by_device[s]) for s in STRATEGIES if by_device[s]]
 
-    # Warnings only alert on Monday — other days stay quiet unless there's an improvement to
-    # report, which is worth surfacing regardless of day.
-    if not MANUAL_TRIGGER and chat_lines and not _is_monday(day):
-        has_improvement = any(m in line for line in chat_lines for m in ("✅", "🟢"))
-        if not has_improvement:
-            print(f"{day}: not Monday, no improvement to report — skipping auto alert")
-            chat_lines = []
-
     # Manual trigger always reports (that's the point of a manual check). Auto/scheduled runs
     # only alert Chat when there's something notable — a warning/failure or an improvement —
     # silence on plain no-news days.
     if MANUAL_TRIGGER and chat_lines:
         alert("📌 *[CWV Report]*\n" + "\n\n".join(chat_lines))
     elif not MANUAL_TRIGGER and chat_lines:
-        has_warning = any(m in line for line in chat_lines for m in ("🔴", "🟠", "⚠️"))
+        has_warning = any(m in line for line in chat_lines for m in WARNING)
         header = "💀 *[CWV Auto Alert]*\n" if has_warning else "🎉 *[CWV Auto Update]*\n"
         alert(header + "\n\n".join(chat_lines))
 

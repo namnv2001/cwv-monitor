@@ -49,13 +49,68 @@ def test_history_and_anomalies():
     assert len(msgs) >= 3, msgs
     assert any("LCP" in m for m in msgs)
 
-    # Too little history -> only absolute checks fire
+    # Too little history -> only absolute checks fire (all three crossed, yesterday was good)
     short_hist = monitor.history(make_db(days=3), day, "https://example.com/", "mobile")
     msgs = monitor.check_anomalies(bad, short_hist)
-    assert all(m.startswith("🔴") for m in msgs), msgs
+    assert all(m.startswith("🚨") for m in msgs), msgs
 
     # Missing metrics don't crash
     assert monitor.check_anomalies({}, hist) == []
+
+
+def test_absolute_breach_is_crossing_only_when_it_just_crossed():
+    limit = monitor.CWV_ABS["lcp_ms"]
+    bad, worse = {"lcp_ms": limit + 500}, {"lcp_ms": limit + 900}
+
+    # was Good on the last recorded day -> incident
+    msgs = monitor.check_anomalies(bad, [{"day": "2026-07-06", "lcp_ms": limit - 100}])
+    assert len(msgs) == 1 and msgs[0].startswith("🚨") and "trước đó" in msgs[0]
+
+    # already over the limit -> standing breach, no 🚨 (this is the daily-noise case)
+    msgs = monitor.check_anomalies(worse, [{"day": "2026-07-06", "lcp_ms": limit + 500}])
+    assert len(msgs) == 1 and msgs[0].startswith("🔴")
+
+    # no prior row at all (new url/strategy, or a lab run) -> standing, don't page
+    assert monitor.check_anomalies(bad, [])[0].startswith("🔴")
+
+
+def test_relative_check_ignores_swings_that_stay_under_the_limit():
+    # CLS 0.06 -> 0.10 is +67% but both are Good — the old ungated check fired 🟠 here daily
+    hist = [{"day": f"2026-07-{i:02d}", "cls": 0.06} for i in range(1, 15)]
+    assert monitor.check_anomalies({"cls": monitor.CWV_ABS["cls"]}, hist) == []
+    # ...but a value that is both over the limit and well over the median still warns
+    msgs = monitor.check_anomalies({"cls": 0.3}, hist)
+    assert any(m.startswith("🟠") for m in msgs), msgs
+
+
+def test_check_url_off_monday_keeps_only_crossings():
+    db = make_db(days=28)  # 28 good days, so today's breach is a fresh crossing
+    breach = {"lcp_ms": 4000, "inp_ms": 150, "cls": 0.05}
+    with patch.object(monitor, "MANUAL_TRIGGER", False), \
+         patch.object(monitor, "fetch_cwv", return_value=breach):
+        _, monday = monitor.check_url("https://example.com/", "mobile", "2026-07-06", db)  # Monday
+        db.execute("DELETE FROM daily WHERE day = '2026-07-06'")
+        _, tuesday = monitor.check_url("https://example.com/", "mobile", "2026-07-07", db)  # Tuesday
+    assert any("🟠" in m for m in monday), monday          # Monday digest keeps trend lines
+    assert [m for m in tuesday if "🚨" in m] == tuesday    # off-Monday: crossings only
+    assert len(tuesday) == 1
+
+    # standing breach off-Monday -> nothing at all
+    db.execute("DELETE FROM daily WHERE day = '2026-07-07'")
+    monitor.save(db, "2026-07-06", "https://example.com/", "mobile", breach)
+    with patch.object(monitor, "MANUAL_TRIGGER", False), \
+         patch.object(monitor, "fetch_cwv", return_value=breach):
+        _, msgs = monitor.check_url("https://example.com/", "mobile", "2026-07-07", db)
+    assert msgs == []
+
+
+def test_fetch_failure_waits_for_the_monday_digest():
+    with patch.object(monitor, "MANUAL_TRIGGER", False), \
+         patch.object(monitor, "fetch_cwv", return_value={}):
+        _, monday = monitor.check_url("https://example.com/", "mobile", "2026-07-06", make_db())
+        _, tuesday = monitor.check_url("https://example.com/", "mobile", "2026-07-07", make_db())
+    assert any("⚠️" in m for m in monday)
+    assert tuesday == []
 
 
 def test_is_monday():
@@ -300,6 +355,10 @@ def test_data_source_label_follows_manual_trigger():
 if __name__ == "__main__":
     test_empty_secret_fails_fast_with_clear_message()
     test_history_and_anomalies()
+    test_absolute_breach_is_crossing_only_when_it_just_crossed()
+    test_relative_check_ignores_swings_that_stay_under_the_limit()
+    test_check_url_off_monday_keeps_only_crossings()
+    test_fetch_failure_waits_for_the_monday_digest()
     test_is_monday()
     test_check_improvements_recovered_to_good_threshold()
     test_check_improvements_better_than_median()

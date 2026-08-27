@@ -44,7 +44,7 @@ Message Chat chia thành từng khối theo device, device nào không có gì �
 💀 *[CWV Auto Alert]*
 📱 *MOBILE*
 *https://example.com/ — 2026-08-17* [field data (CrUX)]
-🔴 LCP = 3,543ms vượt ngưỡng Good (2,500ms)
+🚨 LCP = 3,543ms vượt ngưỡng Good (2,500ms) — trước đó 2,410ms
 
 🖥️ *DESKTOP*
 *https://example.com/ — 2026-08-17* [field data (CrUX)]
@@ -84,18 +84,23 @@ Muốn tune ngưỡng CWV mà không đổi code: thêm **Repository variables**
 
 ## Luật cảnh báo
 
-- 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75) — cùng ngưỡng cho cả mobile lẫn desktop
-- 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL, từng device)
+- 🚨 CWV **vừa** vượt ngưỡng Good — ngày có số liệu gần nhất còn dưới ngưỡng. Đây là sự cố thật, gửi Chat bất kể thứ mấy.
+- 🔴 CWV vượt ngưỡng Good: LCP > 2500ms, INP > 200ms, CLS > 0.1 (p75) — cùng ngưỡng cho cả mobile lẫn desktop — nhưng đã vượt từ trước rồi. Field data là p75 rolling 28 ngày nên con số này gần như không đổi từng ngày; báo lại mỗi ngày không thêm thông tin, nên nó chỉ vào digest thứ 2.
+- 🟠 CWV xấu đi >20% so với median 28 ngày (theo từng URL, từng device), **và** đang vượt ngưỡng Good. Chỉ so tương đối khi chỉ số đã bad: cả 2 chuỗi đều là cùng một rolling 28 ngày, và CLS lượng tử hoá ở 0.01 nên 0.06 → 0.10 đọc thành "+67% xấu hơn" dù hai giá trị đều còn Good.
 
 Luồng auto (chạy theo lịch) chỉ gửi Chat khi có điều gì đó đáng nói — cảnh báo, lỗi fetch, hoặc tin tốt (xem dưới) — không thì im lặng, không alert. Luồng manual trigger luôn báo cáo đầy đủ về Chat, kể cả khi không có cảnh báo (đó là mục đích của việc trigger thủ công).
 
 Tin tốt (chỉ áp dụng cho luồng auto, cần lịch sử field data):
 - ✅ Chỉ số vừa quay lại ngưỡng Good, ngày trước đó còn vượt ngưỡng.
-- 🟢 Chỉ số tốt hơn median 28 ngày >20% (đối xứng với ngưỡng 🟠 xấu đi, tune qua hằng số `CWV_REL_BETTER` đầu `monitor.py`, không có env var riêng).
+- 🟢 Chỉ số tốt hơn median 28 ngày >20% — không gate theo ngưỡng Good như 🟠: một chỉ số vẫn đang bad nhưng đang hồi phục rõ rệt (INP 300ms, tốt hơn 30% so với median 430ms) vẫn là tin đáng báo. Tune qua hằng số `CWV_REL_BETTER` đầu `monitor.py`, không có env var riêng.
 
-Luồng auto vẫn chạy và lưu `data.db` mỗi ngày, nhưng chỉ gửi cảnh báo/lỗi fetch vào **thứ 2** — các ngày khác skip nếu chỉ có cảnh báo. Nếu có ít nhất 1 tin tốt (✅/🟢) thì vẫn báo bình thường bất kể ngày nào.
+Luồng auto vẫn chạy và lưu `data.db` mỗi ngày, nhưng gửi Chat theo 2 chế độ:
+- **Thứ 2** — digest đầy đủ: mọi thứ ở trên, gồm cả 🔴 đang vượt ngưỡng và 🟠/🟢 so với median.
+- **Các ngày khác** — chỉ những dòng báo *thay đổi trạng thái*: 🚨 vừa vượt ngưỡng và ✅ vừa về ngưỡng Good (hằng số `URGENT` trong `monitor.py`). Lọc theo từng dòng, từng URL, từng device — một tin tốt ở URL này không mở cổng cho cảnh báo cũ của URL khác. Không có dòng nào như vậy thì im lặng hoàn toàn.
 
-Header của message Chat tự đổi theo nội dung: 💀 `[CWV Auto Alert]` nếu có ít nhất 1 cảnh báo/lỗi fetch, 🎉 `[CWV Auto Update]` nếu toàn tin tốt.
+Đo trên 40 ngày history thật: luật cũ gửi 39/40 ngày (9–14 dòng mỗi lần), luật này gửi 11/40 (6 digest thứ 2 + 5 ngày có đúng 1 sự kiện thật).
+
+Header của message Chat tự đổi theo nội dung: 💀 `[CWV Auto Alert]` nếu có ít nhất 1 cảnh báo (🚨/🔴/🟠) hoặc lỗi fetch, 🎉 `[CWV Auto Update]` nếu toàn tin tốt.
 
 Ngưỡng tuyệt đối (🔴) tune được qua env var, không cần sửa code:
 
